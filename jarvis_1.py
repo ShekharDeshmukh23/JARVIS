@@ -5,44 +5,38 @@ import re
 import emoji
 # --- ADDED: The new, fast, offline text-to-speech library ---
 import pyttsx3
+import winsound
 
 # --- MODIFIED: Initialize the offline TTS engine ---
-try:
-    engine = pyttsx3.init()
-    voices = engine.getProperty('voices')
-    # Search for a male voice. On Windows, the first voice is usually male (David).
-    # This loop makes it more reliable across different systems.
-    for voice in voices:
-        if "male" in voice.name.lower() or voice.gender == 'male':
-            engine.setProperty('voice', voice.id)
-            break
-    print("✅ Offline TTS engine with male voice initialized successfully!")
-except Exception as e:
-    print(f"❌ Failed to initialize TTS engine: {e}")
-    engine = None
-
-
-# --- REMOVED: No longer need pygame for audio playback ---
-
 def clean_text_for_speech(text):
     """Removes emojis and special characters from the text for cleaner audio."""
-    # This function is the same, just renamed for clarity
     cleaned_text = emoji.replace_emoji(text, '')
     cleaned_text = re.sub(r'={2,}|_{2,}|-{2,}|[*#`]|\[|\]|\(|\)', ' ', cleaned_text)
     return ' '.join(cleaned_text.split())
 
-
-# --- MODIFIED: Replaced the complex audio playback with a simple, direct function ---
 def jarvis_speak(text):
-    """Prints the text and speaks it using the offline engine."""
+    """Prints the text and speaks it using a fresh offline engine each time."""
     print(text)
-    if engine:
-        # Clean the text for better pronunciation
+    if not text.strip():
+        return
+
+    try:
+        engine = pyttsx3.init()
+        voices = engine.getProperty('voices')
+
+        # Pick male voice if available
+        for voice in voices:
+            if "male" in voice.name.lower() or getattr(voice, "gender", "").lower() == "male":
+                engine.setProperty('voice', voice.id)
+                break
+
+        engine.setProperty('rate', 185)  # Faster voice
         cleaned_text = clean_text_for_speech(text)
-        # Queue the text to be spoken
         engine.say(cleaned_text)
-        # Play the queued text and wait until it's finished
         engine.runAndWait()
+        engine.stop()
+    except Exception as e:
+        print(f"[TTS ERROR] {e}")
 
 
 # Riddle data (unchanged)
@@ -116,6 +110,22 @@ def generate_wrong_answer_message(attempts_left):
     return random.choice(messages)
 
 
+def play_correct_sound():
+    """Play a positive confirmation beep"""
+    try:
+        winsound.Beep(1000, 150)   # ding
+        winsound.Beep(1500, 200)   # dong (slightly higher)
+    except RuntimeError:
+        winsound.MessageBeep(winsound.MB_ICONASTERISK)
+
+def play_wrong_sound():
+    """Play a negative error beep"""
+    try:
+        winsound.Beep(600, 200)  # low pitch, longer
+        winsound.Beep(400, 300)  # lower pitch, shorter
+    except RuntimeError:
+        winsound.MessageBeep(winsound.MB_ICONHAND)
+
 def domain_riddle_phase():
     """Handle the domain riddle phase with attempts and local evaluation."""
     jarvis_speak("\n🧩 DOMAIN DISCOVERY RIDDLES")
@@ -137,12 +147,14 @@ def domain_riddle_phase():
                 continue
 
             if evaluate_domain_answer(user_answer, riddle['answer']):
+                play_correct_sound()
                 jarvis_speak(f"🎯 Excellent! That's absolutely correct! You've identified '{riddle['answer']}'!")
                 jarvis_speak("🎉 Perfect! You've discovered our AIML domain!")
                 riddle_solved = True
                 domain_discovered = True
             else:
                 attempts -= 1
+                play_wrong_sound()
                 if attempts > 0:
                     jarvis_speak(f"❌ {generate_wrong_answer_message(attempts)}")
                 else:
