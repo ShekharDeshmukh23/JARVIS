@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SYNAPSE AI Assistant</title>
+    <style>
+      body {
+        margin: 0;
+        background-color: #1a1a1a; /* Changed to a dark gray */
+        overflow: hidden;
+      }
+      #threejs-canvas {
+        position: absolute;
+        top: 0;
+        left: 0;
+      }
+      .logo-image {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        width: 100px; /* Adjust size as needed */
+        z-index: 10;
+        opacity: 1;
+      }
+      #start-button {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: transparent;
+        color: #00d4ff;
+        border: 1px solid #00d4ff;
+        padding: 15px 40px;
+        font-size: 20px;
+        font-family: "Segoe UI", Arial, sans-serif;
+        letter-spacing: 2px;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: all 0.5s ease;
+        text-shadow: 0 0 10px #00d4ff;
+        box-shadow: 0 0 20px rgba(0, 212, 255, 0.4),
+          inset 0 0 20px rgba(0, 212, 255, 0.4);
+        z-index: 10;
+      }
+      #start-button:hover {
+        color: #000;
+        background-color: #00d4ff;
+        box-shadow: 0 0 40px #00d4ff;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="threejs-canvas"></canvas>
+    <img src="gdg.png" alt="GDG Bevy Logo" class="logo-image" />
+    <button id="start-button">E N G A G E</button>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.9.1/gsap.min.js"></script>
+
+   <script>
+  // --- API & State Management ---
+  const API_BASE_URL = "http://127.0.0.1:5000";
+  let scriptActive = false,
+    isAwaitingHuman = false,
+    isAwaitingRiddle = false,
+    lastSpokenText = "",
+    lastRiddleText = "";
+  let currentRiddleInput = "",
+    riddleAttempts = 0,
+    correctAnswers = [];
+
+  // --- Speech ---
+  function speak(text, onEndCallback) {
+    if (!text) {
+      if (onEndCallback) onEndCallback();
+      return;
+    }
+    lastSpokenText = text;
+    const utterance = new SpeechSynthesisUtterance(text);
+    const voices = window.speechSynthesis.getVoices();
+    const targetVoice = voices.find(
+      (v) =>
+        v.lang === "en-US" &&
+        (v.name.includes("Google US English") || v.name.includes("Zira"))
+    );
+    if (targetVoice) utterance.voice = targetVoice;
+    utterance.pitch = 0.9 + Math.random() * 0.2;
+    utterance.rate = 1.0 + Math.random() * 0.15;
+    utterance.onstart = () => {
+      isSpeaking = true;
+    };
+    utterance.onend = () => {
+      isSpeaking = false;
+      if (onEndCallback) onEndCallback();
+    };
+    window.speechSynthesis.speak(utterance);
+  }
+
+  async function advanceScript(payload = null) {
+    const endpoint = scriptActive
+      ? `${API_BASE_URL}/api/next`
+      : `${API_BASE_URL}/api/start`;
+    scriptActive = true;
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: payload ? JSON.stringify(payload) : null,
+      });
+      if (!response.ok)
+        throw new Error(`HTTP error! status: ${response.status}`);
+      const step = await response.json();
+      handleStep(step);
+    } catch (error) {
+      console.error("Failed to fetch from backend:", error);
+      speak("Error: Cannot connect to the backend server.");
+    }
+  }
+
+  function handleStep(step) {
+    switch (step.type) {
+      case "speak":
+        speak(step.text, () => setTimeout(() => advanceScript(), 500));
+        break;
+      case "wait_for_human":
+        isAwaitingHuman = true; // no extra voice prompt
+        break;
+      case "prompt":
+        lastRiddleText = lastSpokenText; // Store the riddle text before speaking the prompt
+        currentRiddleInput = "";
+        riddleAttempts = 0;
+        correctAnswers = step.payload.answers;
+        isAwaitingRiddle = true;
+        break;
+      case "end":
+        speak("Session has concluded. SYNAPSE signing off.");
+        isAwaitingHuman = false;
+        isAwaitingRiddle = false;
+        startDisintegrationAnimation();
+        break;
+    }
+  }
+
+  document.addEventListener("keydown", (event) => {
+    if (!scriptActive) return;
+    if (isAwaitingHuman && event.code === "Space") {
+      event.preventDefault();
+      isAwaitingHuman = false;
+      advanceScript();
+    } else if (isAwaitingRiddle) {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        isAwaitingRiddle = false;
+        riddleAttempts++;
+        const userAnswer = currentRiddleInput.toLowerCase().trim();
+        const isCorrect = correctAnswers.includes(userAnswer);
+        if (isCorrect) {
+          speak("Correct. Proceeding.", () =>
+            advanceScript({ correct: true })
+          );
+        } else if (riddleAttempts >= 2) {
+          speak(
+            `Incorrect.`,
+            () => advanceScript({ correct: false })
+          );
+        } else {
+          speak("Incorrect. Try again.", () => {
+            currentRiddleInput = "";
+            isAwaitingRiddle = true;
+          });
+        }
+      } else if (event.key === "/") {
+        event.preventDefault();
+        // Now use the dedicated variable for the riddle text
+        if (lastRiddleText) {
+          speak(lastRiddleText);
+        }
+      } else if (
+        event.key.length === 1 &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !event.metaKey
+      ) {
+        currentRiddleInput += event.key;
+      } else if (event.key === "Backspace") {
+        currentRiddleInput = currentRiddleInput.slice(0, -1);
+      }
+    }
+  });
+  window.speechSynthesis.onvoiceschanged = () => {
+    window.speechSynthesis.getVoices();
+  };
+
+  // =================================================================
+  // --- THREE.JS "JARVIS" VISUALIZER ---
+  // =================================================================
+
+  let scene,
+    camera,
+    renderer,
+    core,
+    particles,
+    rings = [];
+  let isSpeaking = false;
+  const clock = new THREE.Clock();
+  const particleInfo = {
+    initialPositions: null,
+    galaxyPositions: null,
+    positionsArray: null,
+    colorsArray: null,
+  };
+
+  function init() {
+    scene = new THREE.Scene();
+    camera = new THREE.PerspectiveCamera(
+      75,
+      window.innerWidth / window.innerHeight,
+      0.1,
+      1000
+    );
+    camera.position.z = 10;
+
+    const canvas = document.getElementById("threejs-canvas");
+    renderer = new THREE.WebGLRenderer({
+      canvas: canvas,
+      antialias: true,
+      alpha: true,
+    });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+
+    const coreGeometry = new THREE.IcosahedronGeometry(1.5, 5);
+    const coreMaterial = new THREE.MeshBasicMaterial({
+      color: 0x00d4ff,
+      wireframe: true,
+      transparent: true,
+      opacity: 0,
+    });
+    core = new THREE.Mesh(coreGeometry, coreMaterial);
+    scene.add(core);
+
+    const particleCount = 3000;
+    particleInfo.positionsArray = new Float32Array(particleCount * 3);
+    particleInfo.initialPositions = new Float32Array(particleCount * 3);
+    particleInfo.galaxyPositions = new Float32Array(particleCount * 3);
+    particleInfo.colorsArray = new Float32Array(particleCount * 3);
+
+    const baseColor = new THREE.Color(0x84d2ff); // A very subtle, cool blue
+
+    for (let i = 0; i < particleCount; i++) {
+      const i3 = i * 3;
+      const initialRadius = Math.random() * 50 + 20;
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(Math.random() * 2 - 1);
+
+      particleInfo.initialPositions[i3] =
+        initialRadius * Math.sin(phi) * Math.cos(theta);
+      particleInfo.initialPositions[i3 + 1] =
+        initialRadius * Math.sin(phi) * Math.sin(theta);
+      particleInfo.initialPositions[i3 + 2] = initialRadius * Math.cos(phi);
+
+      particleInfo.positionsArray[i3] = 0;
+      particleInfo.positionsArray[i3 + 1] = 0;
+      particleInfo.positionsArray[i3 + 2] = 0;
+
+      const galaxyRadius = 2 + Math.pow(Math.random(), 3) * 3;
+      const angle = Math.random() * Math.PI * 2;
+      const y = (Math.random() - 0.5) * 0.2;
+
+      particleInfo.galaxyPositions[i3] = Math.cos(angle) * galaxyRadius;
+      particleInfo.galaxyPositions[i3 + 1] = y;
+      particleInfo.galaxyPositions[i3 + 2] = Math.sin(angle) * galaxyRadius;
+
+      // Apply subtle random variations to the base color
+      const color = baseColor.clone();
+      const hueShift = (Math.random() - 0.5) * 0.05; // Small random hue shift
+      const satShift = (Math.random() - 0.5) * 0.3; // Small random saturation shift
+      const lumShift = (Math.random() - 0.5) * 0.3; // Small random luminance shift
+      color.setHSL(color.getHSL({}).h + hueShift, color.getHSL({}).s + satShift, color.getHSL({}).l + lumShift);
+      
+      particleInfo.colorsArray[i3] = color.r;
+      particleInfo.colorsArray[i3 + 1] = color.g;
+      particleInfo.colorsArray[i3 + 2] = color.b;
+    }
+
+    const particleGeometry = new THREE.BufferGeometry();
+    particleGeometry.setAttribute(
+      "position",
+      new THREE.BufferAttribute(particleInfo.positionsArray, 3)
+    );
+    particleGeometry.setAttribute(
+      "color",
+      new THREE.BufferAttribute(particleInfo.colorsArray, 3)
+    );
+
+    const particleMaterial = new THREE.PointsMaterial({
+      size: 0.04,
+      transparent: true,
+      opacity: 0,
+      vertexColors: true,
+    });
+
+    particles = new THREE.Points(particleGeometry, particleMaterial);
+    scene.add(particles);
+
+    for (let i = 0; i < 3; i++) {
+      const ringGeometry = new THREE.TorusGeometry(
+        3 + i * 0.5,
+        0.05,
+        16,
+        100
+      );
+      const ringMaterial = new THREE.MeshBasicMaterial({
+        color: 0x00d4ff,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0,
+      });
+      const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+      ring.rotation.x = Math.random() * Math.PI;
+      ring.rotation.y = Math.random() * Math.PI;
+      rings.push(ring);
+      scene.add(ring);
+    }
+
+    window.addEventListener("resize", onWindowResize, false);
+  }
+
+  function onWindowResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  }
+
+  function startFormationAnimation() {
+    const explodeDuration = 1.0;
+    const coalesceDuration = 2.5;
+    const ease = "power2.out";
+    const delayBetweenPhases = 0.5;
+
+    gsap.to(particleInfo.positionsArray, {
+      duration: explodeDuration,
+      ease: "power1.out",
+      endArray: particleInfo.initialPositions,
+      onUpdate: () => {
+        particles.geometry.attributes.position.needsUpdate = true;
+      },
+      onComplete: () => {
+        gsap.to(particleInfo.positionsArray, {
+          delay: delayBetweenPhases,
+          duration: coalesceDuration,
+          ease: ease,
+          endArray: particleInfo.galaxyPositions,
+          onUpdate: () => {
+            particles.geometry.attributes.position.needsUpdate = true;
+          },
+        });
+        gsap.to(core.material, {
+          delay: delayBetweenPhases,
+          duration: coalesceDuration * 0.5,
+          opacity: 1,
+        });
+        gsap.fromTo(
+          core.scale,
+          { x: 0, y: 0, z: 0 },
+          {
+            delay: delayBetweenPhases,
+            duration: coalesceDuration * 0.8,
+            ease: ease,
+            x: 1,
+            y: 1,
+            z: 1,
+          }
+        );
+        rings.forEach((ring) => {
+          gsap.to(ring.material, {
+            delay: delayBetweenPhases,
+            duration: coalesceDuration * 0.5,
+            opacity: 0.3,
+          });
+        });
+      },
+    });
+    gsap.to(particles.material, {
+      duration: explodeDuration * 0.5,
+      opacity: 0.7,
+    });
+  }
+
+  function startDisintegrationAnimation() {
+    const dissipateDuration = 3.0;
+    const scatterRadius = 50;
+    gsap.to(core.material, {
+      duration: dissipateDuration * 0.5,
+      opacity: 0,
+    });
+    gsap.to(core.scale, {
+      duration: dissipateDuration * 0.5,
+      x: 0,
+      y: 0,
+      z: 0,
+    });
+    rings.forEach((ring) => {
+      gsap.to(ring.material, {
+        duration: dissipateDuration * 0.5,
+        opacity: 0,
+      });
+      gsap.to(ring.scale, {
+        duration: dissipateDuration * 0.5,
+        x: 0,
+        y: 0,
+        z: 0,
+      });
+    });
+    const tempScatterPositions = new Float32Array(
+      particleInfo.galaxyPositions.length
+    );
+    for (let i = 0; i < particleInfo.galaxyPositions.length / 3; i++) {
+      const i3 = i * 3;
+      const currentPos = new THREE.Vector3(
+        particleInfo.galaxyPositions[i3],
+        particleInfo.galaxyPositions[i3 + 1],
+        particleInfo.galaxyPositions[i3 + 2]
+      );
+      currentPos
+        .normalize()
+        .multiplyScalar(scatterRadius + Math.random() * scatterRadius);
+      tempScatterPositions[i3] = currentPos.x;
+      tempScatterPositions[i3 + 1] = currentPos.y;
+      tempScatterPositions[i3 + 2] = currentPos.z;
+    }
+    gsap.to(particles.material, {
+      duration: dissipateDuration,
+      opacity: 0,
+    });
+    gsap.to(particleInfo.positionsArray, {
+      duration: dissipateDuration,
+      ease: "power1.out",
+      endArray: tempScatterPositions,
+      onUpdate: () => {
+        particles.geometry.attributes.position.needsUpdate = true;
+      },
+      onComplete: () => {
+        scene.remove(particles);
+        scene.remove(core);
+        rings.forEach((ring) => scene.remove(ring));
+      },
+    });
+  }
+
+  function animate() {
+    requestAnimationFrame(animate);
+    const delta = clock.getDelta();
+    const time = clock.getElapsedTime();
+
+    if (scriptActive) {
+      scene.rotation.y += delta * 0.03;
+      core.rotation.x += delta * 0.1;
+      core.rotation.z += delta * 0.05;
+      particles.rotation.y += delta * 0.05;
+      particles.rotation.x += delta * 0.02;
+    }
+
+    // New: Separate hue for rings to make them dynamic
+    let coreHue, ringHue;
+
+    if (isSpeaking) {
+      coreHue = (time * 0.01) % 1; // Slower color change for globe when speaking
+      ringHue = (time * 0.02) % 1; // Faster color change for rings when speaking
+      
+      // Core uses very subtle, low-saturation colors
+      core.material.color.setHSL(coreHue, 0.8, 0.7); // Increased Saturation and Lightness
+      core.material.opacity = 1;
+      core.scale.setScalar(1 + Math.sin(time * 15) * 0.05);
+
+      rings.forEach((ring, i) => {
+        // Ring colors use their own hue and are slightly more saturated but still toned down
+        ring.material.color.setHSL((ringHue + i * 0.05) % 1, 0.9, 0.8); // Increased Saturation and Lightness
+        // A softer opacity pulse
+        ring.material.opacity = 0.6 + Math.sin(time * 2 + i) * 0.3; // Increased base opacity and pulse
+        ring.rotation.z += delta * (i % 2 === 0 ? 0.2 : -0.2);
+      });
+      particles.material.opacity = 0.9; // Increased particle opacity
+    } else if (scriptActive) {
+      coreHue = (time * 0.005) % 1; // Very slow color change for globe when idle
+      ringHue = (time * 0.01) % 1; // Slower color change for rings when idle
+
+      core.material.color.setHSL(coreHue, 0.8, 0.7); // Increased Saturation and Lightness
+      rings.forEach((ring) => ring.material.color.setHSL(ringHue, 0.9, 0.8)); // Increased Saturation and Lightness
+      core.scale.lerp(new THREE.Vector3(1, 1, 1), 0.1);
+      rings.forEach((ring) => {
+        ring.material.opacity = 0.5; // Increased ring opacity
+      });
+      particles.material.opacity = 0.9; // Increased particle opacity
+    }
+
+    renderer.render(scene, camera);
+  }
+
+  document.getElementById("start-button").addEventListener(
+    "click",
+    () => {
+      const btn = document.getElementById("start-button");
+      btn.style.opacity = "0";
+      setTimeout(() => {
+        btn.style.display = "none";
+      }, 500);
+      for (let i = 0; i < particleInfo.positionsArray.length; i++) {
+        particleInfo.positionsArray[i] = 0;
+      }
+      particles.geometry.attributes.position.needsUpdate = true;
+      particles.material.opacity = 0;
+      startFormationAnimation();
+      setTimeout(() => {
+        advanceScript();
+      }, 4000);
+    }, {
+      once: true
+    }
+  );
+
+  init();
+  animate();
+</script>
+  </body>
+</html>
